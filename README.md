@@ -63,7 +63,11 @@ Publish the final html to Rpubs or create a github page (website) that sits “o
 ### Potential Data Sources:
 
 Google Dataset Search: https://datasetsearch.research.google.com/
+
 Covid 19 - https://github.com/XinerNing/CGDV.github.io/blob/master/dataSource/index.md
+
 data.world - https://data.world/
+
 UCI ML Repository - http://archive.ics.uci.edu/ml/index.php
+
 Data is Plural - https://docs.google.com/spreadsheets/d/1wZhPLMCHKJvwOkP4juclhjFgqIY8fQFMemwKL2c64vk/edit#gid=0
