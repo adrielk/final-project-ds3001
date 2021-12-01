@@ -1,5 +1,19 @@
 # Final Project Overview
 
+### Our Questions:
+ 
+- What are the most important variables banks can use to determine whether or not someone is qualified for a credit card?
+- What is the best machine learning model for predicting someone's eligiblity for a credit card?
+
+### Metrics
+- We want to focus on prioritizing precision because the cost of a bad credit card holder is high.
+
+### Model
+- Random Forest with various hyperparamters
+- Decision Tree
+
+---
+
 ### Purpose:
 
 To answer a data driven question by deploying the data science lifecycle. At the end of the process, you will have an appreciation for what it is like to develop your own questions, match these questions with data, test the ability of the data via a model to answer your question, develop a final solution and the articulation of the weakness and benefits of the approach. The goal is for you to pull all the skills together that we have worked on all semester, essentially living the life of a practicing data scientist! This is also a great way to start developing a data project portfolio on your repo or website.
