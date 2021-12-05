@@ -8,7 +8,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, results='hide')
 ```
 ```{r}
 library(rio)
@@ -36,68 +36,72 @@ library(help = randomForest)
 library(rio)
 ```
 
-The goal of this lab is to optimize a Random Forest model using the same dataset from last week and then compare the results from the C5.0 method to the Random Forest method. The guidance this week is less prescriptive in terms of steps, so use the skills you have gained over the semester to build and evaluate the RF model and determine if the RF is a better approach or not. You will be graded on your model building, interpretation of the results and explanation of model selection. As always, rely on your teams but submit your own code. Lastly, there are likely several correct approaches involving a variety of different conclusions, just make sure your conclusions are supported by your approach.    
-
-The dataset below includes Census data on 32,000+ individuals with a variety of variables and a target variable for above or below 50k in salary. 
-
-Your goal is to build a Random Forest Classifier to be able to predict income levels above or below 50k. 
-
+sheesh
 ```{r}
-url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
-
-census <- read_csv(url, col_names = FALSE)
-
-colnames(census) <- c("age","workclass","fnlwgt","education","education_num","marital_status","occupation","relationship","race","sex","capital_gain","capital_loss","hours_per_week","native_country","income")
-
-
-census$income <- as.factor(census$income)
-View(census)
+#url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+data <- read_csv("application_record.csv")
+data2 <- read_csv("credit_record.csv")
+count(data2)
+count(data)
+credit <-merge(data,data2)
+count(credit)
+View(credit)
 
 ```
 
 
-Recode the target variable to set the above 50k to 1 and below to 0, should already
-be done. 
+Variable Collapsing and Preprocessing 
 ```{r}
 
-levels(census$income) <- c(0, 1)
+credit <- filter(credit, credit$STATUS!="X")
+
+credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("0","1","5","3","2","4"))
+credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
+credit <- na.omit(credit)
+count(credit)
+View(credit)
+str(credit)
+unique(credit$STATUS)
+unique(credit$NAME_EDUCATION_TYPE)
+unique(credit$NAME_EDUCATION_TYPE)
 ```
 
-Ensure that the variables are correctly classified (should already be done)
+Finish any other data prep (one-hot encode, reduce factor levels, drop columns)
 ```{r}
+#Drop unneeded columns
+credit = select(credit, -c("ID","FLAG_MOBIL","NAME_EDUCATION_TYPE","OCCUPATION_TYPE"))
 
-```
+#Convert columns to factors
+factors <- c("CODE_GENDER","FLAG_OWN_CAR","FLAG_OWN_REALTY",
+                "NAME_INCOME_TYPE","NAME_FAMILY_STATUS",
+                  "NAME_HOUSING_TYPE","FLAG_WORK_PHONE","FLAG_PHONE",
+                    "FLAG_EMAIL");
+credit[,factors] <- lapply(credit[,factors], as.factor)
 
-Finish any other data prep (one-hot encode, reduce factor levels)
-```{r}
 #one hot-encoding
-#drop unneeded columns
-#reduce factor levels by grouping other stuff
-factors <- c("workclass", "marital_status", "occupation","relationship","race", "sex","native_country");
-census[,factors] <- lapply(census[,factors], as.factor)
-census_temp <- subset(census, select = -income)
-census_hot <- one_hot(as.data.table(census_temp),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
+credit_temp <- subset(credit, select = -STATUS)
+credit_hot <- one_hot(as.data.table(credit_temp),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
 
-census_hot$income = census$income
-names(census_hot) <- make.names(names(census_hot))
-
+credit_hot$STATUS = credit$STATUS
+names(credit_hot) <- make.names(names(credit_hot))
+View(credit_hot)
 ```
 
 Create test, tune and training sets 
 ```{r}
 #6 Split your data into test, tune, and train. (70/15/15)
-part_index_1 <- caret::createDataPartition(census_hot$income,
+part_index_1 <- caret::createDataPartition(credit_hot$STATUS,
                                            times=1,
                                            p = 0.70,
                                            groups=1,
                                            list=FALSE)
 
-train <- census_hot[part_index_1, ]
-tune_and_test <- census_hot[-part_index_1, ]
+train <- credit_hot[part_index_1, ]
+tune_and_test <- credit_hot[-part_index_1, ]
 
 #The we need to use the function again to create the tuning set 
 
-tune_and_test_index <- createDataPartition(tune_and_test$income,
+tune_and_test_index <- createDataPartition(tune_and_test$STATUS,
                                            p = .5,
                                            list = FALSE,
                                            times = 1)
@@ -113,30 +117,41 @@ dim(tune)
 #View(train)
 ```
 
+```{r}
+#check the prevalence 
+table(credit$STATUS)
+(prevalence <- table(credit$STATUS)[[2]]/length(credit$STATUS))
+table(credit$STATUS)
+```
+
 Calculate the initial mtry level 
 ```{r}
 mytry_tune <- function(x){
   xx <- dim(x)[2]-1
   sqrt(xx)
 }
-mytry_tune(census_hot)
+mytry_tune(credit_hot)
+View(credit_hot)
+View(train$STATUS)
+str(train)
 ```
 
 Run the initial RF model with 500 trees 
-```{r}
-census_RF = randomForest(income ~ .,          #<- Formula: response variable ~ predictors.
+```{r, cache=TRUE}
+set.seed(1)
+credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
                             #   The period means 'use all other variables in the data'.
                             train,     #<- A data frame with the variables to be used.
                             #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
                             #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
                             #xtest = NULL,       #<- This is already defined in the formula by the ".".
                             #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
-                            ntree = 500,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
-                            mtry = 9,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            ntree = 200,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 6,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
                             replace = TRUE,      #<- Should sampled data points be replaced.
                             #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
                             #strata = NULL,      #<- Not necessary for our purpose here.
-                            sampsize = 100,      #<- Size of sample to draw each time.
+                            sampsize = 200,      #<- Size of sample to draw each time.
                             nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
                             #maxnodes = NULL,    #<- Limits the number of maximum splits. 
                             importance = TRUE,   #<- Should importance of predictors be assessed?
@@ -147,7 +162,8 @@ census_RF = randomForest(income ~ .,          #<- Formula: response variable ~ p
                             keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
 
-census_RF
+credit_RF
+View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
 ```
 
 
@@ -297,16 +313,16 @@ Once a final model has been selected, evaluate the model using the test dataset
 ```{r}
 
 #Best results achieved with "census_RF_more_tuning" model with a validation accuracy of 0.8624
-census_predict_test = predict(census_RF_more,      #<- a randomForest model
+credit_predict_test = predict(credit_RF,      #<- a randomForest model
                             test,      #<- the test data set to use
                             type ="response",   #<- what results to produce, see the help menu for the options
                             predict.all = FALSE,  #<- should the predictions of all trees be kept?
                             proximity = FALSE)    #<- should proximity measures be computed
 
-(census_eval <- confusionMatrix(as.factor(census_predict_test), 
-                as.factor(test$income), 
+(credit_eval <- confusionMatrix(as.factor(credit_predict_test), 
+                as.factor(test$STATUS), 
                 dnn=c("Prediction", "Actual"), 
-                mode = "sens_spec"))
+                mode = "sens_spec", positive="paid"))
 
 
 ```
