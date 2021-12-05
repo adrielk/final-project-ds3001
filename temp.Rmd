@@ -55,15 +55,16 @@ Variable Collapsing and Preprocessing
 
 creditC <- filter(credit, credit$STATUS=="C")
 View(creditC)
-creditC <- creditC[sample(nrow(creditC), 24000), ]
+creditC <- creditC[sample(nrow(creditC), 5000), ]
 View(creditC)
 credit <- filter(credit, credit$STATUS!="X")
 credit <- filter(credit, credit$STATUS!="0")
+credit <- filter(credit, credit$STATUS!="1")
 credit <- filter(credit, credit$STATUS!="C")
 unique(credit$STATUS)
 credit <- rbind(creditC, credit)
 unique(credit$STATUS)
-credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("1","5","3","2","4"))
+credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("5","3","2","4"))
 credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
 credit <- na.omit(credit)
 count(credit)
@@ -171,7 +172,7 @@ credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ p
                             replace = TRUE,      #<- Should sampled data points be replaced.
                             #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
                             #strata = NULL,      #<- Not necessary for our purpose here.
-                            sampsize = 200,      #<- Size of sample to draw each time.
+                            sampsize = 300,      #<- Size of sample to draw each time.
                             nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
                             #maxnodes = NULL,    #<- Limits the number of maximum splits. 
                             importance = TRUE,   #<- Should importance of predictors be assessed?
