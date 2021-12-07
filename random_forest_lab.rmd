@@ -45,7 +45,7 @@ count(data2)
 count(data)
 credit <-merge(data,data2)
 count(credit)
-View(credit)
+#View(credit)
 
 ```
 
@@ -59,7 +59,7 @@ credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("0","1","5","3"
 credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
 credit <- na.omit(credit)
 count(credit)
-View(credit)
+#View(credit)
 str(credit)
 unique(credit$STATUS)
 unique(credit$NAME_EDUCATION_TYPE)
@@ -84,7 +84,7 @@ credit_hot <- one_hot(as.data.table(credit_temp),cols = "auto",sparsifyNAs = TRU
 
 credit_hot$STATUS = credit$STATUS
 names(credit_hot) <- make.names(names(credit_hot))
-View(credit_hot)
+#View(credit_hot)
 ```
 
 Create test, tune and training sets 
@@ -131,8 +131,8 @@ mytry_tune <- function(x){
   sqrt(xx)
 }
 mytry_tune(credit_hot)
-View(credit_hot)
-View(train$STATUS)
+#View(credit_hot)
+#View(train$STATUS)
 str(train)
 ```
 
@@ -163,7 +163,13 @@ credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ p
                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
 
 credit_RF
-View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
+#View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
+
+# Confusion matrix:
+#        late   paid class.error
+# late 123412  88149   0.4166600
+# paid  96034 134642   0.4163155
+
 ```
 
 

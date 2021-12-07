@@ -1,0 +1,583 @@
+---
+title: "Random_Forest_Lab"
+author: "Adriel Kim"
+date: "12/1/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results='hide')
+```
+```{r}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(caret)
+library(C50) #Need this to pass into caret 
+library(mlbench)
+library(MLmetrics)
+
+library(RColorBrewer)
+library(ROCR)
+
+library(mltools)
+library(data.table)
+library(randomForest)
+# library(help = randomForest)
+library(rio)
+```
+
+
+```{r}
+#url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+data <- read_csv("application_record.csv")
+data2 <- read_csv("credit_record.csv")
+count(data2)
+count(data)
+credit <-merge(data,data2)
+count(credit)
+status <- as.factor(credit$STATUS)
+table(status)
+#      0      1      2      3      4      5      C      X 
+# 290654   8747    801    286    214   1527 329536 145950 
+
+# View(credit)
+
+```
+
+
+Variable Collapsing and Preprocessing 
+```{r}
+set.seed(1)
+# creditC <- filter(credit, credit$STATUS=="C")
+creditC <- filter(credit, credit$STATUS=="C" || credit$STATUS=="X" || credit$STATUS=="0" || credit$STATUS=="1")
+# View(creditC)
+creditC <- creditC[sample(nrow(creditC), 700000, replace=FALSE), ]
+# View(creditC)
+credit <- filter(credit, credit$STATUS!="X")
+credit <- filter(credit, credit$STATUS!="0")
+credit <- filter(credit, credit$STATUS!="1")
+credit <- filter(credit, credit$STATUS!="C")
+credit <- credit[sample(nrow(credit), 700000, replace=TRUE), ]
+
+# ?rbind
+# unique(credit$STATUS)
+credit <- rbind(creditC, credit)
+# unique
+# credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("5","3","2","4"))
+
+credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C", "X","0", "1"), late=c("5","3","2","4"))
+credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
+credit <- na.omit(credit)
+count(credit)
+# View(credit)
+str(credit)
+unique(credit$STATUS)
+table(credit$STATUS)
+unique(credit$OCCUPATION_TYPE)
+# unique(credit$NAME_EDUCATION_TYPE)
+```
+
+Finish any other data prep (one-hot encode, reduce factor levels, drop columns)
+```{r}
+#Drop unneeded columns
+credit = select(credit, -c("ID"))
+
+#Convert columns to factors
+factors <- c("CODE_GENDER","FLAG_OWN_CAR","FLAG_OWN_REALTY","OCCUPATION_TYPE", "NAME_FAMILY_STATUS", "FLAG_WORK_PHONE","FLAG_PHONE","FLAG_EMAIL","FLAG_MOBIL","NAME_EDUCATION_TYPE", "NAME_HOUSING_TYPE", "NAME_INCOME_TYPE");
+
+credit[,factors] <- lapply(credit[,factors], as.factor)
+
+# Remap categorical vars to have less values per cat var
+credit$NAME_INCOME_TYPE <- revalue(credit$NAME_INCOME_TYPE, c("Commercial associate"="Working", "Working"="Working", "State servant"="Working", "Pensioner"="Pensioner", "Student"="Student"))
+credit$NAME_HOUSING_TYPE <- revalue(credit$NAME_HOUSING_TYPE, c("House / apartment"="Apt", 'With parents'='With parents', 'Municipal apartment'='Apt','Rented apartment'='Apt','Office apartment'='Apt', 'Co-op apartment'='Apt'))
+credit$NAME_EDUCATION_TYPE <- revalue(credit$NAME_EDUCATION_TYPE, c('Secondary / secondary special'='Secondary','Lower secondary'='Secondary','Higher education'='Higher education','Incomplete higher'='Higher education','Academic degree'='Academic degree'))
+credit$NAME_FAMILY_STATUS <- revalue(credit$NAME_FAMILY_STATUS, c('Single / not married'='Single', 'Separated'='Single','Widow'='Single', 'Civil marriage'='Married', 'Married'='Married'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Cleaning staff'='LABOR','Cooking staff'='LABOR','Drivers'='LABOR','Laborers'='LABOR','Low-skill Laborers'='LABOR','Security staff'='LABOR','Waiters/barmen staff'='LABOR'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Accountants'='OFFICE','Core staff'='OFFICE','HR staff'='OFFICE','Medicine staff'='OFFICE','Private service staff'='OFFICE','Realty agents'='OFFICE','Sales staff'='OFFICE','Secretaries'='OFFICE'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Managers'='TECH','High skill tech staff'='TECH','IT staff'='TECH'))
+# View(credit)
+
+#one hot-encoding
+credit_temp <- subset(credit, select = -STATUS)
+credit_hot <- one_hot(as.data.table(credit_temp),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
+
+credit_hot$STATUS = credit$STATUS
+names(credit_hot) <- make.names(names(credit_hot))
+# View(credit_hot)
+```
+
+Create test, tune and training sets 
+```{r}
+#6 Split your data into test, tune, and train. (70/15/15)
+part_index_1 <- caret::createDataPartition(credit_hot$STATUS,
+                                           times=1,
+                                           p = 0.70,
+                                           groups=1,
+                                           list=FALSE)
+
+train <- credit_hot[part_index_1, ]
+tune_and_test <- credit_hot[-part_index_1, ]
+
+#The we need to use the function again to create the tuning set 
+
+tune_and_test_index <- createDataPartition(tune_and_test$STATUS,
+                                           p = .5,
+                                           list = FALSE,
+                                           times = 1)
+
+tune <- tune_and_test[tune_and_test_index, ]#aka, validation set
+test <- tune_and_test[-tune_and_test_index, ]#final testing set
+
+
+dim(train)
+dim(test)# these will be slightly off because the data set isn't perfectly even
+#buts its not a issue. 
+dim(tune)
+#View(train)
+```
+
+```{r}
+#check the prevalence 
+(prevalence <- table(credit$STATUS)[[2]]/length(credit$STATUS))
+# 0.6746311
+table(credit$STATUS)
+# late  paid 
+# 11575 24000 
+# =====
+#   paid   late 
+# 697461 702539
+```
+
+Calculate the initial mtry level 
+```{r}
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  sqrt(xx)
+}
+mytry_tune(credit_hot)
+# 5.744563
+# View(credit_hot)
+# View(train$STATUS)
+str(train)
+```
+
+Run the initial RF model with 500 trees 
+```{r, cache=TRUE}
+set.seed(1)
+credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+                            #   The period means 'use all other variables in the data'.
+                            train,     #<- A data frame with the variables to be used.
+                            #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                            #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+                            #xtest = NULL,       #<- This is already defined in the formula by the ".".
+                            #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+                            ntree = 500,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 6,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            replace = TRUE,      #<- Should sampled data points be replaced.
+                            #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+                            #strata = NULL,      #<- Not necessary for our purpose here.
+                            sampsize = 300,      #<- Size of sample to draw each time.
+                            nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                            #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+                            importance = TRUE,   #<- Should importance of predictors be assessed?
+                            #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+                            proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                            norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+                            do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+                            keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                            keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+
+credit_RF
+
+# OOB estimate of  error rate: 20.13%
+# Confusion matrix:
+#      late paid class.error
+# late  953 1027  0.51868687
+# paid   76 3424  0.02171429
+
+# ===========
+# OOB estimate of  error rate: 17.74%
+# Confusion matrix:
+#        paid   late class.error
+# paid 437220  51003   0.1044666
+# late 122840 368938   0.2497875
+
+
+# View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
+
+# Most important features are CNT_CHILDREN, CNT_FAM_MEMBERS, AMT_INCOME_TOTAL, DAYS_EMPLOYED, DAYS_BIRTH, MONTHS_BALANCE.
+```
+
+Using the training and tune datasets tune the model in consideration of the number
+of trees, the number of variables to sample and the sample size that optimize the model
+output. 
+```{r}
+tune_test <- function(model){
+  credit_predict_tune = predict(model, tune, type="response", predict.all=FALSE, proximity = FALSE)
+  (credit_eval <- confusionMatrix(as.factor(credit_predict_tune), 
+                as.factor(tune$STATUS), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+}
+
+# credit_RF_more_trees = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+#                             #   The period means 'use all other variables in the data'.
+#                             train,     #<- A data frame with the variables to be used.
+#                             #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+#                             #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+#                             #xtest = NULL,       #<- This is already defined in the formula by the ".".
+#                             #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+#                             ntree = 1000,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+#                             mtry = 9,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+#                             replace = TRUE,      #<- Should sampled data points be replaced.
+#                             #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+#                             #strata = NULL,      #<- Not necessary for our purpose here.
+#                             sampsize = 100,      #<- Size of sample to draw each time.
+#                             nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+#                             #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+#                             importance = TRUE,   #<- Should importance of predictors be assessed?
+#                             #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+#                             proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+#                             norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+#                             do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+#                             keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+#                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+# 
+# credit_RF_more_trees
+# 
+# credit_RF_greater_mtry = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+#                             #   The period means 'use all other variables in the data'.
+#                             train,     #<- A data frame with the variables to be used.
+#                             #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+#                             #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+#                             #xtest = NULL,       #<- This is already defined in the formula by the ".".
+#                             #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+#                             ntree = 500,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+#                             mtry = 15,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+#                             replace = TRUE,      #<- Should sampled data points be replaced.
+#                             #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+#                             #strata = NULL,      #<- Not necessary for our purpose here.
+#                             sampsize = 100,      #<- Size of sample to draw each time.
+#                             nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+#                             #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+#                             importance = TRUE,   #<- Should importance of predictors be assessed?
+#                             #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+#                             proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+#                             norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+#                             do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+#                             keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+#                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+# 
+# credit_RF_greater_mtry
+# 
+# credit_RF_more_samps = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+#                             #   The period means 'use all other variables in the data'.
+#                             train,     #<- A data frame with the variables to be used.
+#                             #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+#                             #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+#                             #xtest = NULL,       #<- This is already defined in the formula by the ".".
+#                             #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+#                             ntree = 500,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+#                             mtry = 9,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+#                             replace = TRUE,      #<- Should sampled data points be replaced.
+#                             #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+#                             #strata = NULL,      #<- Not necessary for our purpose here.
+#                             sampsize = 300,      #<- Size of sample to draw each time.
+#                             nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+#                             #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+#                             importance = TRUE,   #<- Should importance of predictors be assessed?
+#                             #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+#                             proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+#                             norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+#                             do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+#                             keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+#                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+# 
+# credit_RF_more_samps
+
+credit_RF_more = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+                            #   The period means 'use all other variables in the data'.
+                            train,     #<- A data frame with the variables to be used.
+                            #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                            #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+                            #xtest = NULL,       #<- This is already defined in the formula by the ".".
+                            #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+                            ntree = 100,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 6,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            replace = TRUE,      #<- Should sampled data points be replaced.
+                            #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+                            #strata = NULL,      #<- Not necessary for our purpose here.
+                            sampsize = 300,      #<- Size of sample to draw each time.
+                            nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                            #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+                            importance = TRUE,   #<- Should importance of predictors be assessed?
+                            #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+                            proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                            norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+                            do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+                            keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                            keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+
+credit_RF_more
+
+#100 trees
+# OOB estimate of  error rate: 19.42%
+# Confusion matrix:
+#      late paid class.error
+# late 1014  966   0.4878788
+# paid   98 3402   0.0280000
+#
+#==========
+# OOB estimate of  error rate: 19.13%
+# Confusion matrix:
+#        paid   late class.error
+# paid 430687  57536   0.1178478
+# late 129928 361850   0.2642005
+
+
+tune_test(credit_RF_more)
+
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  202   26
+#       paid  222  724
+#                                           
+#                Accuracy : 0.7888          
+#                  95% CI : (0.7643, 0.8118)
+#     No Information Rate : 0.6388          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.4911          
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.4764          
+#             Specificity : 0.9653          
+#          Pos Pred Value : 0.8860          
+#          Neg Pred Value : 0.7653          
+#              Prevalence : 0.3612          
+#          Detection Rate : 0.1721          
+#    Detection Prevalence : 0.1942          
+#       Balanced Accuracy : 0.7209          
+#                                           
+#        'Positive' Class : late  
+
+
+#=========
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 92441 27538
+#       late 12178 77843
+#                                           
+#                Accuracy : 0.8109          
+#                  95% CI : (0.8092, 0.8125)
+#     No Information Rate : 0.5018          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.6219   # pretty good? baseline is 50%       
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.8836          
+#             Specificity : 0.7387          
+#          Pos Pred Value : 0.7705          
+#          Neg Pred Value : 0.8647          
+#              Prevalence : 0.4982          
+#          Detection Rate : 0.4402          
+#    Detection Prevalence : 0.5713          
+#       Balanced Accuracy : 0.8111          
+#                                           
+#        'Positive' Class : paid    
+
+
+
+credit_RF_more_tuning = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+                            #   The period means 'use all other variables in the data'.
+                            train,     #<- A data frame with the variables to be used.
+                            #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                            #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+                            #xtest = NULL,       #<- This is already defined in the formula by the ".".
+                            #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+                            ntree = 1000,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 9,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            replace = TRUE,      #<- Should sampled data points be replaced.
+                            #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+                            #strata = NULL,      #<- Not necessary for our purpose here.
+                            sampsize = 500,      #<- Size of sample to draw each time.
+                            nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                            #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+                            importance = TRUE,   #<- Should importance of predictors be assessed?
+                            #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+                            proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                            norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+                            do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+                            keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                            keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+
+credit_RF_more_tuning
+#OOB estimate of  error rate: 15.16%
+# Confusion matrix:
+#      late paid class.error
+# late 1249  731  0.36919192
+# paid  100 3400  0.02857143
+
+#===========
+#plateaus after 250 trees
+# OOB estimate of  error rate: 13.42%
+# Confusion matrix:
+#        paid   late class.error
+# paid 452393  35830  0.07338859
+# late  95659 396119  0.19451663
+
+tune_test(credit_RF_more_tuning)
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  267   24
+#       paid  157  726
+#                                          
+#                Accuracy : 0.8458         
+#                  95% CI : (0.8239, 0.866)
+#     No Information Rate : 0.6388         
+#     P-Value [Acc > NIR] : < 2.2e-16      
+#                                          
+#                   Kappa : 0.6414         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#             Sensitivity : 0.6297         
+#             Specificity : 0.9680         
+#          Pos Pred Value : 0.9175         
+#          Neg Pred Value : 0.8222         
+#              Prevalence : 0.3612         
+#          Detection Rate : 0.2274         
+#    Detection Prevalence : 0.2479         
+#       Balanced Accuracy : 0.7989         
+#                                          
+#        'Positive' Class : late  
+
+#============================
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 97037 20244
+#       late  7582 85137
+#                                          
+#                Accuracy : 0.8675         
+#                  95% CI : (0.866, 0.8689)
+#     No Information Rate : 0.5018         
+#     P-Value [Acc > NIR] : < 2.2e-16      
+#                                          
+#                   Kappa : 0.7351         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#             Sensitivity : 0.9275         
+#             Specificity : 0.8079         
+#          Pos Pred Value : 0.8274         
+#          Neg Pred Value : 0.9182         
+#              Prevalence : 0.4982         
+#          Detection Rate : 0.4621         
+#    Detection Prevalence : 0.5585         
+#       Balanced Accuracy : 0.8677         
+#                                          
+#        'Positive' Class : paid  
+
+
+```
+
+Once a final model has been selected, evaluate the model using the test dataset
+```{r}
+
+#Best results achieved with "credit_RF_more_tuning" model with a validation accuracy of 0.8624
+credit_predict_test = predict(credit_RF,      #<- a randomForest model
+                            test,      #<- the test data set to use
+                            type ="response",   #<- what results to produce, see the help menu for the options
+                            predict.all = FALSE,  #<- should the predictions of all trees be kept?
+                            proximity = FALSE)    #<- should proximity measures be computed
+
+(credit_eval <- confusionMatrix(as.factor(credit_predict_test), 
+                as.factor(test$STATUS), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec", positive="paid"))
+
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  206   20
+#       paid  218  730
+#                                           
+#                Accuracy : 0.7973          
+#                  95% CI : (0.7731, 0.8199)
+#     No Information Rate : 0.6388          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.511           
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.9733          
+#             Specificity : 0.4858          
+#          Pos Pred Value : 0.7700          
+#          Neg Pred Value : 0.9115          
+#              Prevalence : 0.6388          
+#          Detection Rate : 0.6218          
+#    Detection Prevalence : 0.8075          
+#       Balanced Accuracy : 0.7296          
+#                                           
+#        'Positive' Class : paid 
+#===============
+
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 93644 26476
+#       late 10975 78904
+#                                         
+#                Accuracy : 0.8217        
+#                  95% CI : (0.82, 0.8233)
+#     No Information Rate : 0.5018        
+#     P-Value [Acc > NIR] : < 2.2e-16     
+#                                         
+#                   Kappa : 0.6435        
+#                                         
+#  Mcnemar's Test P-Value : < 2.2e-16     
+#                                         
+#             Sensitivity : 0.8951        
+#             Specificity : 0.7488        
+#          Pos Pred Value : 0.7796        
+#          Neg Pred Value : 0.8779        
+#              Prevalence : 0.4982        
+#          Detection Rate : 0.4459        
+#    Detection Prevalence : 0.5720        
+#       Balanced Accuracy : 0.8219        
+#                                         
+#        'Positive' Class : paid 
+
+```
+
+
+Summarize your findings as compared to the C5.0 model from last week. Think about the
+time the model took to train, the model evaluation output and if the patterns generally 
+between the two models are the same or different. What did you learn about the models or
+the data along the way?
+
+Compared to the decision tree model from last week, the random forest model had a better performance. However, it took longer to train especially with a large sample size and a large number of trees. Generally, the patterns of training and tuning the models were the same. Training and tuning both models involved creating multiple models and adjusting various hyperparameters. The tuning set allowed me to test my model's performance without peeking into the test data set. I would gradually adjust my hyperparameters based off validation accuracy. One thing I learned about the data was that the column names violated the naming format when one-hot-encoded. This required additional preprocessing in order for the data to work in the randomForest function.    
