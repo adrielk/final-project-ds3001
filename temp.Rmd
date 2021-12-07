@@ -36,7 +36,7 @@ library(randomForest)
 library(rio)
 ```
 
-sheesh
+
 ```{r}
 #url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
 data <- read_csv("application_record.csv")
@@ -45,6 +45,11 @@ count(data2)
 count(data)
 credit <-merge(data,data2)
 count(credit)
+status <- as.factor(credit$STATUS)
+table(status)
+#      0      1      2      3      4      5      C      X 
+# 290654   8747    801    286    214   1527 329536 145950 
+
 # View(credit)
 
 ```
@@ -52,23 +57,29 @@ count(credit)
 
 Variable Collapsing and Preprocessing 
 ```{r}
-
-creditC <- filter(credit, credit$STATUS=="C")
-View(creditC)
-creditC <- creditC[sample(nrow(creditC), 5000), ]
-View(creditC)
+set.seed(1)
+# creditC <- filter(credit, credit$STATUS=="C")
+creditC <- filter(credit, credit$STATUS=="C" || credit$STATUS=="X" || credit$STATUS=="0" || credit$STATUS=="1")
+# View(creditC)
+creditC <- creditC[sample(nrow(creditC), 700000, replace=FALSE), ]
+# View(creditC)
 credit <- filter(credit, credit$STATUS!="X")
 credit <- filter(credit, credit$STATUS!="0")
 credit <- filter(credit, credit$STATUS!="1")
 credit <- filter(credit, credit$STATUS!="C")
-unique(credit$STATUS)
+credit <- credit[sample(nrow(credit), 700000, replace=TRUE), ]
+
+# ?rbind
+# unique(credit$STATUS)
 credit <- rbind(creditC, credit)
-unique(credit$STATUS)
-credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("5","3","2","4"))
+# unique
+# credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C"), late=c("5","3","2","4"))
+
+credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C", "X","0", "1"), late=c("5","3","2","4"))
 credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
 credit <- na.omit(credit)
 count(credit)
-View(credit)
+# View(credit)
 str(credit)
 unique(credit$STATUS)
 table(credit$STATUS)
@@ -94,7 +105,7 @@ credit$NAME_FAMILY_STATUS <- revalue(credit$NAME_FAMILY_STATUS, c('Single / not 
 credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Cleaning staff'='LABOR','Cooking staff'='LABOR','Drivers'='LABOR','Laborers'='LABOR','Low-skill Laborers'='LABOR','Security staff'='LABOR','Waiters/barmen staff'='LABOR'))
 credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Accountants'='OFFICE','Core staff'='OFFICE','HR staff'='OFFICE','Medicine staff'='OFFICE','Private service staff'='OFFICE','Realty agents'='OFFICE','Sales staff'='OFFICE','Secretaries'='OFFICE'))
 credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Managers'='TECH','High skill tech staff'='TECH','IT staff'='TECH'))
-View(credit)
+# View(credit)
 
 #one hot-encoding
 credit_temp <- subset(credit, select = -STATUS)
@@ -102,7 +113,7 @@ credit_hot <- one_hot(as.data.table(credit_temp),cols = "auto",sparsifyNAs = TRU
 
 credit_hot$STATUS = credit$STATUS
 names(credit_hot) <- make.names(names(credit_hot))
-View(credit_hot)
+# View(credit_hot)
 ```
 
 Create test, tune and training sets 
@@ -142,6 +153,9 @@ dim(tune)
 table(credit$STATUS)
 # late  paid 
 # 11575 24000 
+# =====
+#   paid   late 
+# 697461 702539
 ```
 
 Calculate the initial mtry level 
@@ -152,8 +166,8 @@ mytry_tune <- function(x){
 }
 mytry_tune(credit_hot)
 # 5.744563
-View(credit_hot)
-View(train$STATUS)
+# View(credit_hot)
+# View(train$STATUS)
 str(train)
 ```
 
@@ -185,12 +199,21 @@ credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ p
 
 credit_RF
 
-# Confusion matrix: OOB estimate of  error rate: 29.84%
-#      late  paid class.error
-# late 1110  6993   0.8630137
-# paid  437 16363   0.0260119
+# OOB estimate of  error rate: 20.13%
+# Confusion matrix:
+#      late paid class.error
+# late  953 1027  0.51868687
+# paid   76 3424  0.02171429
 
-View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
+# ===========
+# OOB estimate of  error rate: 17.74%
+# Confusion matrix:
+#        paid   late class.error
+# paid 437220  51003   0.1044666
+# late 122840 368938   0.2497875
+
+
+# View(as.data.frame(importance(credit_RF, type = 2, scale = TRUE)))
 
 # Most important features are CNT_CHILDREN, CNT_FAM_MEMBERS, AMT_INCOME_TOTAL, DAYS_EMPLOYED, DAYS_BIRTH, MONTHS_BALANCE.
 ```
@@ -307,7 +330,80 @@ credit_RF_more = randomForest(STATUS ~ .,          #<- Formula: response variabl
 
 credit_RF_more
 
+#100 trees
+# OOB estimate of  error rate: 19.42%
+# Confusion matrix:
+#      late paid class.error
+# late 1014  966   0.4878788
+# paid   98 3402   0.0280000
+#
+#==========
+# OOB estimate of  error rate: 19.13%
+# Confusion matrix:
+#        paid   late class.error
+# paid 430687  57536   0.1178478
+# late 129928 361850   0.2642005
+
+
 tune_test(credit_RF_more)
+
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  202   26
+#       paid  222  724
+#                                           
+#                Accuracy : 0.7888          
+#                  95% CI : (0.7643, 0.8118)
+#     No Information Rate : 0.6388          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.4911          
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.4764          
+#             Specificity : 0.9653          
+#          Pos Pred Value : 0.8860          
+#          Neg Pred Value : 0.7653          
+#              Prevalence : 0.3612          
+#          Detection Rate : 0.1721          
+#    Detection Prevalence : 0.1942          
+#       Balanced Accuracy : 0.7209          
+#                                           
+#        'Positive' Class : late  
+
+
+#=========
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 92441 27538
+#       late 12178 77843
+#                                           
+#                Accuracy : 0.8109          
+#                  95% CI : (0.8092, 0.8125)
+#     No Information Rate : 0.5018          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.6219   # pretty good? baseline is 50%       
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.8836          
+#             Specificity : 0.7387          
+#          Pos Pred Value : 0.7705          
+#          Neg Pred Value : 0.8647          
+#              Prevalence : 0.4982          
+#          Detection Rate : 0.4402          
+#    Detection Prevalence : 0.5713          
+#       Balanced Accuracy : 0.8111          
+#                                           
+#        'Positive' Class : paid    
+
+
 
 credit_RF_more_tuning = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
                             #   The period means 'use all other variables in the data'.
@@ -333,7 +429,76 @@ credit_RF_more_tuning = randomForest(STATUS ~ .,          #<- Formula: response 
                             keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
 
 credit_RF_more_tuning
+#OOB estimate of  error rate: 15.16%
+# Confusion matrix:
+#      late paid class.error
+# late 1249  731  0.36919192
+# paid  100 3400  0.02857143
+
+#===========
+#plateaus after 250 trees
+# OOB estimate of  error rate: 13.42%
+# Confusion matrix:
+#        paid   late class.error
+# paid 452393  35830  0.07338859
+# late  95659 396119  0.19451663
+
 tune_test(credit_RF_more_tuning)
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  267   24
+#       paid  157  726
+#                                          
+#                Accuracy : 0.8458         
+#                  95% CI : (0.8239, 0.866)
+#     No Information Rate : 0.6388         
+#     P-Value [Acc > NIR] : < 2.2e-16      
+#                                          
+#                   Kappa : 0.6414         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#             Sensitivity : 0.6297         
+#             Specificity : 0.9680         
+#          Pos Pred Value : 0.9175         
+#          Neg Pred Value : 0.8222         
+#              Prevalence : 0.3612         
+#          Detection Rate : 0.2274         
+#    Detection Prevalence : 0.2479         
+#       Balanced Accuracy : 0.7989         
+#                                          
+#        'Positive' Class : late  
+
+#============================
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 97037 20244
+#       late  7582 85137
+#                                          
+#                Accuracy : 0.8675         
+#                  95% CI : (0.866, 0.8689)
+#     No Information Rate : 0.5018         
+#     P-Value [Acc > NIR] : < 2.2e-16      
+#                                          
+#                   Kappa : 0.7351         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#             Sensitivity : 0.9275         
+#             Specificity : 0.8079         
+#          Pos Pred Value : 0.8274         
+#          Neg Pred Value : 0.9182         
+#              Prevalence : 0.4982         
+#          Detection Rate : 0.4621         
+#    Detection Prevalence : 0.5585         
+#       Balanced Accuracy : 0.8677         
+#                                          
+#        'Positive' Class : paid  
+
 
 ```
 
@@ -352,6 +517,60 @@ credit_predict_test = predict(credit_RF,      #<- a randomForest model
                 dnn=c("Prediction", "Actual"), 
                 mode = "sens_spec", positive="paid"))
 
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction late paid
+#       late  206   20
+#       paid  218  730
+#                                           
+#                Accuracy : 0.7973          
+#                  95% CI : (0.7731, 0.8199)
+#     No Information Rate : 0.6388          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.511           
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.9733          
+#             Specificity : 0.4858          
+#          Pos Pred Value : 0.7700          
+#          Neg Pred Value : 0.9115          
+#              Prevalence : 0.6388          
+#          Detection Rate : 0.6218          
+#    Detection Prevalence : 0.8075          
+#       Balanced Accuracy : 0.7296          
+#                                           
+#        'Positive' Class : paid 
+#===============
+
+# Confusion Matrix and Statistics
+# 
+#           Actual
+# Prediction  paid  late
+#       paid 93644 26476
+#       late 10975 78904
+#                                         
+#                Accuracy : 0.8217        
+#                  95% CI : (0.82, 0.8233)
+#     No Information Rate : 0.5018        
+#     P-Value [Acc > NIR] : < 2.2e-16     
+#                                         
+#                   Kappa : 0.6435        
+#                                         
+#  Mcnemar's Test P-Value : < 2.2e-16     
+#                                         
+#             Sensitivity : 0.8951        
+#             Specificity : 0.7488        
+#          Pos Pred Value : 0.7796        
+#          Neg Pred Value : 0.8779        
+#              Prevalence : 0.4982        
+#          Detection Rate : 0.4459        
+#    Detection Prevalence : 0.5720        
+#       Balanced Accuracy : 0.8219        
+#                                         
+#        'Positive' Class : paid 
 
 ```
 
