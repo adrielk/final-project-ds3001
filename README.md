@@ -1,5 +1,7 @@
 # Final Project Overview
 
+RPubs Site: https://rpubs.com/theadrielkim/845186
+
 ### Our Questions:
  
 - What are the most important variables banks can use to determine whether or not someone is qualified for a credit card?
