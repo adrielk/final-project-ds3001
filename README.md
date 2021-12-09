@@ -5,7 +5,6 @@ RPubs Site: https://rpubs.com/theadrielkim/845186
 ### Our Questions:
  
 - What are the most important variables banks can use to determine whether or not someone is qualified for a credit card?
-- What is the best machine learning model for predicting someone's eligiblity for a credit card?
 
 ### Metrics
 - We want to focus on prioritizing precision because the cost of a bad credit card holder is high.

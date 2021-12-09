@@ -1,0 +1,409 @@
+---
+title: "Final Project - Credit Card Approval Random Forest Model"
+author: "Adriel Kim, Peter Shin, Po Wei Tsao"
+date: "12/8/2021"
+output:
+  html_document:
+    toc: TRUE
+    theme: journal
+    toc_float: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+```{r echo=FALSE, include=FALSE}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(caret)
+library(C50) #Need this to pass into caret 
+library(mlbench)
+library(MLmetrics)
+
+library(RColorBrewer)
+library(ROCR)
+
+library(mltools)
+library(data.table)
+library(randomForest)
+# library(help = randomForest)
+library(rio)
+```
+## Question and Background
+
+We are CS majors, and as we were to applying to internships, we stumbled upon applying to a lot of banks and fintech companies. Because of this, we thought it would be a good idea to gain more insight on the data behind the actions that this industry works with. So we formulated the question, "What are the most important variables banks can use to determine whether or not someone is qualified for a credit card?"
+
+## Loading the Data Set
+
+As we can see, there is a big difference between the categories. We removed 0 and 1 to make the "paid" and "late" categories more clear-cut.
+```{r, results='hide', echo = TRUE, message=FALSE, warning=FALSE}
+#url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+data <- read_csv("application_record.csv")
+data2 <- read_csv("credit_record.csv")
+credit <-merge(data,data2)
+status <- as.factor(credit$STATUS)
+table(status)
+counts = as.data.frame(table(status))
+p<-ggplot(data=counts, aes(x=status, y=Freq)) +
+  geom_bar(stat="identity")+
+  geom_text(aes(label=Freq), vjust=-0.3, size=3.5)+
+  theme_minimal()
+p
+
+```
+
+
+## Variable Collapsing and Preprocessing
+
+Throughout this project, we experimented with various ways of processing our raw data and building an effective Random Forest model. We first started by taking the entire dataset and running it through a random forest algorithm with the response variable removed. In this problem, our response variable is the status of loan-payments of each individual.
+
+The dataset we found categorized people into 7 categories in the "STATUS" column. "O" if they were 1-29 days past due on their loans, "1" if 30-59 days, "2" if 60-89 days, "3" if 90-119 days, "4" if 120-149 days and "5" if more than 150 days past due on their loans. The other two categories were "C" for those who paid off their loans that month and "X" for those who had no loans for the month. 
+At first, we wanted to make things clear-cut, so all the "C" and "X" people were considered "paid" and every other category was considered "late." However, this gave us horrible results. The model predicted incorrectly approximately 45% of the time. Despite further analysis and dropping columns that were not as important, the lowest we got the error rate to be was 38%. 
+
+We realized that rows with the values "1" and "0" for the "STATUS" attribute were ambiguous so we decided to exclude them from our dataset for a more clear-cut division between "good" credit card holders and "bad" ones. This simplified our binary classification problem.
+
+Furthermore, we had come to realize that the number of "paid" and "late" individuals are extremely disproportionate. There were only approximately 2800 "late" individuals while we had more than 400,000 individuals that paid on time. This would make it very difficult for the random forest model to make accurate predictions on the "late" categories. Therefore, we decided to resample the "late" and "paid" category of people an equal amount of times with replacement.
+
+```{r}
+set.seed(1)
+creditC <- filter(credit, credit$STATUS=="C")
+creditX <- filter(credit, credit$STATUS=="X")
+creditC <- rbind(creditC, creditX)
+
+creditC <- creditC[sample(nrow(creditC), 400000, replace=FALSE), ]
+
+credit <- filter(credit, credit$STATUS!="X")
+credit <- filter(credit, credit$STATUS!="0")
+credit <- filter(credit, credit$STATUS!="1")
+credit <- filter(credit, credit$STATUS!="C")
+credit <- credit[sample(nrow(credit), 400000, replace=TRUE), ]
+
+
+credit <- rbind(creditC, credit)
+
+credit$STATUS <- fct_collapse(credit$STATUS, paid=c("C", "X"), late=c("5","3","2","4"))#paid=c("C", "X", "0", "1"), late=c("5","3","2","4"))
+credit$OCCUPATION_TYPE <- replace(credit$OCCUPATION_TYPE, is.na(credit$OCCUPATION_TYPE), "Unknown")
+credit <- na.omit(credit)
+
+```
+
+## Additional Data Preparation
+
+Finish any other data prep (one-hot encode, reduce factor levels, drop columns)
+```{r}
+#Drop unneeded columns
+credit = select(credit, -c("ID"))
+
+#Convert columns to factors
+factors <- c("CODE_GENDER","FLAG_OWN_CAR","FLAG_OWN_REALTY","OCCUPATION_TYPE", "NAME_FAMILY_STATUS", "FLAG_WORK_PHONE","FLAG_PHONE","FLAG_EMAIL","FLAG_MOBIL","NAME_EDUCATION_TYPE", "NAME_HOUSING_TYPE", "NAME_INCOME_TYPE");
+
+credit[,factors] <- lapply(credit[,factors], as.factor)
+
+# Remap categorical vars to have less values per cat var
+credit$NAME_INCOME_TYPE <- revalue(credit$NAME_INCOME_TYPE, c("Commercial associate"="Working", "Working"="Working", "State servant"="Working", "Pensioner"="Pensioner", "Student"="Student"))
+credit$NAME_HOUSING_TYPE <- revalue(credit$NAME_HOUSING_TYPE, c("House / apartment"="Apt", 'With parents'='With parents', 'Municipal apartment'='Apt','Rented apartment'='Apt','Office apartment'='Apt', 'Co-op apartment'='Apt'))
+credit$NAME_EDUCATION_TYPE <- revalue(credit$NAME_EDUCATION_TYPE, c('Secondary / secondary special'='Secondary','Lower secondary'='Secondary','Higher education'='Higher education','Incomplete higher'='Higher education','Academic degree'='Academic degree'))
+credit$NAME_FAMILY_STATUS <- revalue(credit$NAME_FAMILY_STATUS, c('Single / not married'='Single', 'Separated'='Single','Widow'='Single', 'Civil marriage'='Married', 'Married'='Married'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Cleaning staff'='LABOR','Cooking staff'='LABOR','Drivers'='LABOR','Laborers'='LABOR','Low-skill Laborers'='LABOR','Security staff'='LABOR','Waiters/barmen staff'='LABOR'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Accountants'='OFFICE','Core staff'='OFFICE','HR staff'='OFFICE','Medicine staff'='OFFICE','Private service staff'='OFFICE','Realty agents'='OFFICE','Sales staff'='OFFICE','Secretaries'='OFFICE'))
+credit$OCCUPATION_TYPE <- revalue(credit$OCCUPATION_TYPE, c('Managers'='TECH','High skill tech staff'='TECH','IT staff'='TECH'))
+# View(credit)
+
+#one hot-encoding
+credit_temp <- subset(credit, select = -STATUS)
+credit_hot <- one_hot(as.data.table(credit_temp),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
+
+credit_hot$STATUS = credit$STATUS
+names(credit_hot) <- make.names(names(credit_hot))
+```
+
+## Create test, tune and training sets 
+```{r}
+#6 Split your data into test, tune, and train. (70/15/15)
+part_index_1 <- caret::createDataPartition(credit_hot$STATUS,
+                                           times=1,
+                                           p = 0.70,
+                                           groups=1,
+                                           list=FALSE)
+
+train <- credit_hot[part_index_1, ]
+tune_and_test <- credit_hot[-part_index_1, ]
+
+#The we need to use the function again to create the tuning set 
+
+tune_and_test_index <- createDataPartition(tune_and_test$STATUS,
+                                           p = .5,
+                                           list = FALSE,
+                                           times = 1)
+
+tune <- tune_and_test[tune_and_test_index, ]#aka, validation set
+test <- tune_and_test[-tune_and_test_index, ]#final testing set
+
+```
+
+## Prevalence
+Our prevalence is 0.5 because we sampled 'paid' and 'late' equally. 
+```{r}
+(prevalence <- table(credit$STATUS)[[2]]/length(credit$STATUS))
+table(credit$STATUS)
+```
+
+## Calculate the initial mtry level 
+```{r}
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  sqrt(xx)
+}
+mytry_tune(credit_hot)
+```
+
+## Run the initial RF model with 230 trees 
+```
+Model Results on Train Set:
+
+Confusion Matrix and Statistics
+
+          Actual
+Prediction  late  paid
+      late 49307 10423
+      paid 10693 49577
+                                          
+               Accuracy : 0.824           
+                 95% CI : (0.8219, 0.8262)
+    No Information Rate : 0.5             
+    P-Value [Acc > NIR] : < 2e-16         
+                                          
+                  Kappa : 0.6481          
+                                          
+ Mcnemar's Test P-Value : 0.06415         
+                                          
+            Sensitivity : 0.8218          
+            Specificity : 0.8263          
+         Pos Pred Value : 0.8255          
+         Neg Pred Value : 0.8226          
+             Prevalence : 0.5000          
+         Detection Rate : 0.4109          
+   Detection Prevalence : 0.4978          
+      Balanced Accuracy : 0.8240          
+                                          
+       'Positive' Class : late  
+```
+
+Initially, we ran the model with 500 trees. However, we realized that the error rates began to plateau at around 200 trees. For the sake of efficiency, we decided to only run our Random Forest model with 230 trees.
+
+```
+Confusion matrix:
+OOB estimate of  error rate: 17.65%
+       late    paid   class.error
+late 229891   50109   0.1789607
+paid  48716  231284   0.1739857
+```
+With our method of resampling, we managed to achieve an error rate of 17.65%. This is a notable improvement from the 40% error rates that we achieved without resampling. Our class error rate is also much more balanced. Before, our we had a very unbalanced class error rate (50% class error rate for "late" while a less than 2.5% class error rate for "paid").
+       
+```{r, eval=TRUE, results="hide"}
+set.seed(1)
+credit_RF = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+                            #   The period means 'use all other variables in the data'.
+                            train,     #<- A data frame with the variables to be used.
+                            #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                            #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+                            #xtest = NULL,       #<- This is already defined in the formula by the ".".
+                            #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+                            ntree = 230,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 6,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            replace = TRUE,      #<- Should sampled data points be replaced.
+                            #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+                            #strata = NULL,      #<- Not necessary for our purpose here.
+                            sampsize = 300,      #<- Size of sample to draw each time.
+                            nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                            #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+                            importance = TRUE,   #<- Should importance of predictors be assessed?
+                            #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+                            proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                            norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+                            do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+                            keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                            keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+
+credit_RF
+
+imp_list = as.array(importance(credit_RF, type = 2, scale = TRUE))
+
+vars = c("CODE_GENDER_F",
+"CODE_GENDER_M",
+"FLAG_OWN_CAR_N",
+"FLAG_OWN_CAR_Y",
+"FLAG_OWN_REALTY_N",
+"FLAG_OWN_REALTY_Y",
+"CNT_CHILDREN",
+"AMT_INCOME_TOTAL",
+"NAME_INCOME_TYPE_Working",
+"NAME_INCOME_TYPE_Pensioner",
+"NAME_INCOME_TYPE_Student",
+"NAME_EDUCATION_TYPE_Academic.degree",
+"NAME_EDUCATION_TYPE_Higher.education",
+"NAME_EDUCATION_TYPE_Secondary",
+"NAME_FAMILY_STATUS_Married",
+"NAME_FAMILY_STATUS_Single",
+"NAME_HOUSING_TYPE_Apt",
+"NAME_HOUSING_TYPE_With.parents",
+"DAYS_BIRTH",
+"DAYS_EMPLOYED",
+"FLAG_MOBIL_1",
+"FLAG_WORK_PHONE_0",
+"FLAG_WORK_PHONE_1",
+"FLAG_PHONE_0",
+"FLAG_PHONE_1",
+"FLAG_EMAIL_0",
+"FLAG_EMAIL_1",
+"OCCUPATION_TYPE_OFFICE",
+"OCCUPATION_TYPE_LABOR",
+"OCCUPATION_TYPE_TECH",
+"OCCUPATION_TYPE_Unknown",
+"CNT_FAM_MEMBERS",
+"MONTHS_BALANCE")
+
+
+
+```
+
+```{r results='hide'}
+
+imp_df = data.frame(var=vars, MeanGiniDecrease=imp_list)
+
+p<-ggplot(data=imp_df, aes(x=MeanDecreaseGini, y=vars)) +
+  geom_bar(stat="identity")+
+  theme_minimal()
+p
+
+```
+Most important features are CNT_CHILDREN, CNT_FAM_MEMBERS, AMT_INCOME_TOTAL, DAYS_EMPLOYED, DAYS_BIRTH, MONTHS_BALANCE.
+
+
+## Model Validation Test
+```{r eval=FALSE}
+tune_test <- function(model){
+  credit_predict_tune = predict(model, tune, type="response", predict.all=FALSE, proximity = FALSE)
+  (credit_eval <- confusionMatrix(as.factor(credit_predict_tune), 
+                as.factor(tune$STATUS), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+}
+
+
+tune_test(credit_RF)
+
+```
+
+## Tuning - Finding best mtry
+After evaluating our inital model on the validation set, we adjusted the mtry and sampsize hyperparameters to further refine our model.
+We tried multiple of mtry such as 6, 8, 10, 12, and 14. Our best results were attained with 12 with an error of 13.55% We were able to achieve around a 4% improvement.
+
+### Final Model Result
+```
+No. of variables tried at each split: 12
+
+        OOB estimate of  error rate: 13.55%
+Confusion matrix:
+       late   paid class.error
+late 240659  39341   0.1405036
+paid  36541 243459   0.1305036
+```
+```{r eval=FALSE}
+credit_RF_more_tuning = randomForest(STATUS ~ .,          #<- Formula: response variable ~ predictors.
+                            #   The period means 'use all other variables in the data'.
+                            train,     #<- A data frame with the variables to be used.
+                            #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                            #subset = NULL,      #<- This is unnecessary because we're using all the rows in the training data set.
+                            #xtest = NULL,       #<- This is already defined in the formula by the ".".
+                            #ytest = NULL,       #<- This is already defined in the formula by "PREGNANT".
+                            ntree = 230,        #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                            mtry = 12,            #<- Number of variables randomly sampled as candidates at each split. Default number for classification is sqrt(# of variables). Default number for regression is (# of variables / 3).
+                            replace = TRUE,      #<- Should sampled data points be replaced.
+                            #classwt = NULL,     #<- Priors of the classes. Use this if you want to specify what proportion of the data SHOULD be in each class. This is relevant if your sample data is not completely representative of the actual population 
+                            #strata = NULL,      #<- Not necessary for our purpose here.
+                            sampsize = 500,      #<- Size of sample to draw each time.
+                            nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                            #maxnodes = NULL,    #<- Limits the number of maximum splits. 
+                            importance = TRUE,   #<- Should importance of predictors be assessed?
+                            #localImp = FALSE,   #<- Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+                            proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                            norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs).
+                            do.trace = TRUE,     #<- If set to TRUE, give a more verbose output as randomForest is run.
+                            keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                            keep.inbag = TRUE)   #<- Should an n by ntree matrix be returned that keeps track of which samples are in-bag in which trees? 
+
+credit_RF_more_tuning
+
+
+tune_test(credit_RF_more_tuning)
+
+```
+
+## Final Model Evaluation
+Once a final model has been selected, evaluate the model using the test dataset
+
+### Results:
+```
+Confusion Matrix and Statistics
+
+          Actual
+Prediction  late  paid
+      late 51588  7886
+      paid  8412 52114
+                                          
+               Accuracy : 0.8642          
+                 95% CI : (0.8622, 0.8661)
+    No Information Rate : 0.5             
+    P-Value [Acc > NIR] : < 2.2e-16       
+                                          
+                  Kappa : 0.7284          
+                                          
+ Mcnemar's Test P-Value : 3.916e-05       
+                                          
+            Sensitivity : 0.8598          
+            Specificity : 0.8686          
+         Pos Pred Value : 0.8674          
+         Neg Pred Value : 0.8610          
+             Prevalence : 0.5000          
+         Detection Rate : 0.4299          
+   Detection Prevalence : 0.4956          
+      Balanced Accuracy : 0.8642          
+                                          
+       'Positive' Class : late      
+```
+```{r eval=FALSE}
+
+#Best results achieved with "credit_RF_more_tuning" model with a validation accuracy of 0.8624
+credit_predict_test = predict(credit_RF_more_tuning,      #<- a randomForest model
+                            test,      #<- the test data set to use
+                            type ="response",   #<- what results to produce, see the help menu for the options
+                            predict.all = FALSE,  #<- should the predictions of all trees be kept?
+                            proximity = FALSE)    #<- should proximity measures be computed
+
+credit_eval <- confusionMatrix(as.factor(credit_predict_test), 
+                as.factor(test$STATUS), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec")
+
+credit_eval
+
+```
+
+
+## Summary/Findings
+
+Our Random Forest binary classifier performs with an accuracy of 86.42%, a recall of 85.98%, and a precision of 86.86%. The accuracy of our model outperforms our baseline of 50%. In the context of this problem, a higher precision may be desirable if the costs of having an unreliable credit card holder is low compared to the benefit of having more credit card holders. Also, a higher recall may be desirable if the cost of having unreliable credit card holders is high. Our model optimizes precision (specificity), because we assume that the costs of having a few unreliable credit card holders is low. In other words, our model is more likely classify credit holders as "good" even if they are "bad". 
+
+To answer our question, "What are the most important variables banks can use to determine whether or not someone is qualified for a credit card?", we can look at the results of our plot regarding variable importance. It is clear that CNT_CHILDREN, CNT_FAM_MEMBERS, AMT_INCOME_TOTAL, DAYS_EMPLOYED, DAYS_BIRTH, MONTHS_BALANCE are the most important variables. CNT_CHILDREN is the number of children the individual has. CNT_FAM_MEMBERS is the number of family members the individual has. AMT_INCOME_TOTAL is their annual income. DAYS_EMPLOYED is days since the first day of employment, if this number is negative then the person is unemployed. DAYS_BIRTH is the number of days since they were born (age). Lastly, MONTHS_BALANCE is the balance within the person's account on the day the data was collected.
+
